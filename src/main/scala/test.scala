@@ -1,57 +1,81 @@
-package net.snips.scalab
-
-import org.saddle.io.{CsvFile, CsvParser, CsvParams}
-import org.saddle.Index
-import scala.collection.JavaConversions._
-
-import org.apache.commons.dbcp.BasicDataSource
-import MyPostgresDriver.simple._
-import Database.threadLocalSession
-import scala.slick.jdbc.{StaticQuery => Q}
-
-object Main extends App { 
-
-	def parseCsv(filename: String, sep: String, nameTable: String, cols: Map[Int, (String, String)]): Unit = {
-		//parse csv with saddle
-		val file = CsvFile(filename)
-		val params = CsvParams(separChar = sep.toCharArray.head, skipLines = 1)
-		val titles = cols.values.map(_._1).toArray
-		val frame = CsvParser.parsePar(cols.keys.toList, params)(file).setColIndex(Index(titles))
-		val cleanedFrame = frame.rdropNA
-
-		//to make type correpondance int postgres and scala
-		val sqlTypes = Map("String" -> "varchar", "Double" -> "float8")
-		val typeMap = cols.values.toMap
-		def formatForSql(valType: String, value: String): String = valType match {
-			case "String" => "'" + value + "'"
-			case "Double" => value
-		} 
-		
-
-		implicit val db = {
-	        val ds = new BasicDataSource
-	        ds.setDriverClassName("org.postgresql.Driver")
-	        ds.setUsername("postgres")
-	        ds.setUrl("jdbc:postgresql://localhost:5432/osm")
-	        Database.forDataSource(ds)
-	    }
-
-    	db withSession {
-    		//create table shema
-    		Q.updateNA("drop table if exists " + nameTable).execute
-			Q.updateNA("create table " + nameTable + "("+ cols.map(s => s._2._1 + " " + sqlTypes(s._2._2) + " not null").toList.mkString(", ") + ")").execute
-
-			for ((row, vals) <- cleanedFrame.toRowSeq) {
-				try {
-					(Q.u + "insert into " + nameTable + " values(" + vals.toSeq.map(s => formatForSql(typeMap(s._1), s._2)).toList.mkString(", ") + ")").execute
-				} catch { case e:Exception =>
-					println(println("insert into " + nameTable + " values(" + vals.toSeq.map(s => formatForSql(typeMap(s._1), s._2)).toList.mkString(", ") + ")")
-)
-				}
-			}
-		}
-	}
+ import spark.SparkContext
+ import spark.SparkContext._
+ import spark.util.Vector
+ import org.apache.log4j.Logger
+ import org.apache.log4j.Level
+ import scala.util.Random
+ import scala.io.Source
 
 
-	parseCsv("laposte.csv", ";", "postes", Map(0 -> ("id", "String"), 1 -> ("name", "String"), 9 -> ("lat", "Double"), 10 -> ("lon", "Double")))
-}
+ object Cluster {
+   def parseVector(line: String): Vector = {
+       return new Vector(line.split(',').map(_.toDouble))
+   }
+   def closestPoint(p: Vector, centers: Array[Vector]): Int = {
+     var index = 0
+     var bestIndex = 0
+     var closest = Double.PositiveInfinity
+     for (i <- 0 until centers.length) {
+       val tempDist = p.squaredDist(centers(i))
+       if (tempDist < closest) {
+         closest = tempDist
+         bestIndex = i
+       }
+     }
+     return bestIndex
+   }
+   def average(ps: Seq[Vector]) : Vector = {
+     val numVectors = ps.size
+     var out = new Vector(ps(0).elements)
+     for (i <- 1 until numVectors) {
+       out += ps(i)
+     }
+     out / numVectors
+   }
+   // Add any new functions you need here
+   def main(args: Array[String]) {
+     Logger.getLogger("spark").setLevel(Level.WARN)
+     val sc = new SparkContext("local", "Cluster", "/home/vagrant/alexandre/sparks")
+
+
+     val K = 3
+     val convergeDist = 1e-6
+     val file = sc.textFile("iris.data")
+
+
+     val data = file.map(line => {
+       val Array(sepalLength, sepalWidth, petalLength, petalWidth, specy) = line.trim.split(",")
+       specy -> new Vector(Array(sepalLength, sepalWidth, petalLength, petalWidth).map(_.toDouble))
+     })
+
+
+     val count = data.count()
+     println("Number of records " + count)
+     // Your code goes here
+     var centroids = data.takeSample(false, K, 42).map(x => x._2)
+     var tempDist = 1.0
+     do {
+       var closest = data.map(p => (closestPoint(p._2, centroids), p._2))
+       var pointsGroup = closest.groupByKey()
+       var newCentroids = pointsGroup.mapValues(ps => average(ps)).collectAsMap()
+       tempDist = 0.0
+       for (i <- 0 until K) {
+         tempDist += centroids(i).squaredDist(newCentroids(i))
+       }
+       for (newP <- newCentroids) {
+         centroids(newP._1) = newP._2
+       }
+       println("Finished iteration (delta = " + tempDist + ")")
+     } while (tempDist > convergeDist)
+     println("Clusters:")
+     val numArticles = 10
+     for((centroid, centroidI) <- centroids.zipWithIndex) {
+       // print numArticles articles which are assigned to this centroid’s cluster
+       data.filter(p => (closestPoint(p._2, centroids) == centroidI)).take(numArticles).foreach(
+           x => println(x._1))
+       println()
+     }
+     sc.stop()
+     System.exit(0)
+   }
+ }
