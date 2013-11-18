@@ -1,33 +1,31 @@
 import scala.math._
 import scala.collection.mutable.{Set => MutableSet, Map => MutableMap}
 import scala.io._
+import java.io._
 
-object Sampler {
+object Sampler extends App {
 
+    // parsing arguments
+    val infile = args(0)
+    val withFeatures = args(1)
+    val nbRepresentatives = args(2).toInt
+    val tmax = args(3).toDouble
+    val outfile = args(4)
 
-    val tmax = 4.0d
-    val nbRepresentatives = 10
-    val test_type = "random table"
-
-    val (data, solutionMap) = if (test_type == "random table") {
-            val a = parseFile("test.csv")
-            (a, a)
-        }
-        else {
-            val dataAll = parseFile("iris.data")
-            val sol = dataAll.map(v => v(4))
-            (dataAll.map(v => Array(v(0), v(1), v(2), v(3))), sol)
-        }    
+    val data = parseFile(infile)
     
     val nbSamples = data.length
     val nbFeatures = data.head.length
-
+    println(s"Parsed input file (Nb samples: $nbSamples, Nb features: $nbFeatures)")
+    
 
     def parseFile(file: String): Array[Array[Double]] = {
         val lines = Source.fromFile(file).getLines.filter(_.trim.length > 0)
         val headers: Map[String, Int] = lines.next.split(",").zipWithIndex.toMap
+        val indexToKeep = withFeatures.split(",").map(headers(_))
         lines.map(s => try {
-            Some(s.split(",").map(_.toDouble))
+            val line = s.split(",")
+            Some(indexToKeep.map(line(_)).map(_.toDouble))
         } catch {
             case x: Throwable => {
                 println("Error with " + s)
@@ -41,23 +39,10 @@ object Sampler {
 
     def boolToInt(b: Boolean): Double = if(b) 1 else 0
 
-    // val DklMap = (for {i <- (0 until nbSamples)
-    //                    j <- (0 until nbSamples)}
-    //                         yield (i,j) -> Dkl(i,j)
-    //     ).toMap
-
-    // val DklMap = (0 until nbSamples).par.map(i => 
-    //         (0 until nbSamples).map(j =>
-    //                 ((i,j), Dkl(i,j))
-    //             )
-    //     ).toMap
 
     def Dkl(row1:Int, row2:Int): Double = {
         val A = data(row1).map(v => if (v == 0.0d) 1.0e-10 else v)
         val B = data(row2).map(v => if (v == 0.0d) 1.0e-10 else v)
-        // (0 until nbFeatures).map(i => 
-        //     (1 - boolToInt(A(i) > B(i))) * log(B(i)/A(i)) * B(i) + boolToInt(A(i) > B(i)) * log(A(i)/B(i)) * A(i)
-        //     ).sum
         (0 until nbFeatures).map(i => 
             if (A(i) > B(i)) log(A(i)/B(i)) * A(i)
             else log(B(i)/A(i)) * B(i)
@@ -106,70 +91,43 @@ object Sampler {
 
 
 
-   
-    def main(args: Array[String]) {
 
-        val timer = new SimpleTimer()
-        timer.start()
-        // (0 until nbSamples).foreach{ j =>
-        //     (0 until nbSamples).map(i => Dkl(j,i))
-        //     println(j.toString+ "   " + timer.tick/nbSamples.toDouble)
-        // }
-        // println(timer.tick)
+    // initialization
+    var R = MutableSet[Int](0)
+    var Etheta = MutableSet[Int]() ++ (1 until data.length)
+    Etheta --= associatedElements(0, Etheta)
 
-        // initialization
-        var R = MutableSet[Int](0)
-        var Etheta = MutableSet[Int]() ++ (1 until data.length)
-        Etheta --= associatedElements(0, Etheta)
+    var i = 0
+    // R.size < nbRepresentatives | Etheta.size != 0
+    while (i < nbRepresentatives - 1) {
+        i+=1
 
-        var i = 0
-        // R.size < nbRepresentatives | Etheta.size != 0
-        while (i < nbRepresentatives-1) {
-            println(R)
-            R.foreach{r => println(data(r).toList)}
-            i+=1
+        val EAsList = Etheta.toArray.sorted
+        val weights = EAsList.par.map(e => objective(e, R, Etheta))
 
-            println("Calculating weights")
-            val EAsList = Etheta.toArray.sorted
-            val weights = EAsList.par.map(e => objective(e, R, Etheta))
-            println("took " + timer.tick)
+        val maxWeight = weights.max
 
-            val maxWeight = weights.max
-
-            println("updating sets")
-            val toAdd = weights.zipWithIndex.filter({case (w,e) => w == maxWeight}).map(_._2).toList
+        val toAdd = weights.zipWithIndex.filter({case (w,e) => w == maxWeight}).map(_._2).toList
+        if (toAdd.length > 0) {
             val r = EAsList(toAdd.head)
             R += r
             Etheta -= r
             Etheta --= associatedElements(r, Etheta)
-            println("took " + timer.tick)
-
         }
-        R.foreach{r => println(data(r).toList)}
+
+        print(i + "                  \r")
 
     }
+    println(s"Number of representatives found: $i")
+
+    // output
+    val out = new PrintWriter(new File(outfile))
+    out.write(withFeatures + "\n")
+    R.foreach{r => out.write(data(r).toList.mkString(",") + "\n")}
+    out.close()
+
+
 }
     
-class SimpleTimer {
-
-    var timestamp = System.currentTimeMillis
-    var dtimestamp = System.currentTimeMillis
-
-    def start() {
-        timestamp = System.currentTimeMillis
-        dtimestamp = System.currentTimeMillis
-    }
-
-    def tick(): Long = {
-        val past = dtimestamp
-        dtimestamp = System.currentTimeMillis
-        dtimestamp - past
-    }
-
-    def total(): Long = {
-        System.currentTimeMillis - timestamp
-    }
-
-}
 
 
