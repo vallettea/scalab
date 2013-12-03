@@ -22,7 +22,12 @@ object Sampler extends App {
     def parseFile(file: String): Array[Array[Double]] = {
         val lines = Source.fromFile(file).getLines.filter(_.trim.length > 0)
         val headers: Map[String, Int] = lines.next.split(",").zipWithIndex.toMap
-        val indexToKeep = withFeatures.split(",").map(headers(_))
+        val indexToKeep = if (withFeatures != "all") {
+                withFeatures.split(",").map(headers(_))
+            } else {
+                headers.values.toArray
+            }
+        
         lines.map(s => try {
             val line = s.split(",")
             Some(indexToKeep.map(line(_)).map(_.toDouble))
@@ -53,7 +58,7 @@ object Sampler extends App {
 
     def associatedElements(row: Int, unassociated: MutableSet[Int]): Set[Int] = {
         val entropyMap = unassociated.map(u => (u, Dkl(row, u))).toMap
-        var ceil = entropyMap.values.min * tmax
+        val ceil = entropyMap.values.min * tmax
         entropyMap.filter({ case (k,v) => v < ceil}).map(_._1).toSet
     }
 
@@ -98,9 +103,11 @@ object Sampler extends App {
     Etheta --= associatedElements(0, Etheta)
 
     var i = 0
-    // R.size < nbRepresentatives | Etheta.size != 0
-    while (i < nbRepresentatives - 1) {
-        i+=1
+    var j = Etheta.size
+
+    while ((i < nbRepresentatives) & (j != 0)) {
+        i = R.size
+        j = Etheta.size
 
         val EAsList = Etheta.toArray.sorted
         val weights = EAsList.par.map(e => objective(e, R, Etheta))
@@ -115,10 +122,11 @@ object Sampler extends App {
             Etheta --= associatedElements(r, Etheta)
         }
 
-        print(i + "                  \r")
+        print((i,j) + "                  \r")
 
     }
-    println(s"Number of representatives found: $i")
+    val nbFound = R.size
+    println(s"Number of representatives found: $nbFound")
 
     // output
     val out = new PrintWriter(new File(outfile))
